@@ -43,6 +43,49 @@ async function unserialize(text) {
   return data
 }
 
+
+/** Return reference value for cache usage of serialized string. 
+ * 
+ * if y4:args is the X th y123:abc in the object, 
+ * it can be reused as R(X-1), instead of writing y4:args again.
+ * 
+ * Returns negative number if not found.
+*/
+function getHaxeReferenceNumber(serialized, keys) {
+  const results = Object.fromEntries(keys.map(key => [key, -1]));
+
+  let i = 0
+  let stringCounter=0;
+  const stringMatch = /^y(\d+):/
+  while (i < serialized.length) {
+    if (serialized[i] === 'y') {
+      let match = stringMatch.exec(serialized.slice(i));
+
+      // check if string matched
+      if (match) {
+        
+        const length = parseInt(match[1]);
+        const matchLength = match[0].length
+        const stringValue = serialized.substr(i+matchLength, length)
+        
+        // check if a key is matched
+        for (const key of keys) {
+          if (stringValue === key) {
+            results[key] = stringCounter
+            keys.splice(keys.indexOf(key), 1);
+          }
+        }
+
+        stringCounter++;
+        i += matchLength + length
+        continue;
+      }
+    }
+    i++;
+  }
+  return results
+}
+
 /**
  * Converts objects in a haxe serialized string to their enum instances.
  * 
@@ -57,10 +100,14 @@ async function unserialize(text) {
  * @see https://haxe.org/manual/std-serialization-format.html
  */
 function handleHaxeEnums(serialized) {
+  // check first appearance of enum name and enum tag:
+  const enumRefNumbers = getHaxeReferenceNumber(serialized, ["args", "__enum_name", "__enum_tag"]);
+
   // match Haxe object: start with o, and with g
   // limited to 0 args enums: "y4:argsah"
-  const enumRegex = /oy4:argsahy11:__enum_namey(\d+):([A-Za-z_][\w]*)y10:__enum_tagy(\d+):([A-Za-z_0-9]*?)g/g;
-  return serialized.replace(enumRegex, "wy$1:$2y$3:$4:0"); 
+  const enumPattern = `o(y4:args|R${enumRefNumbers.args})ah(y11:__enum_name|R${enumRefNumbers.__enum_name})(y\\d+:[A-Za-z0-9_.]*?|R\\d+)(y10:__enum_tag|R${enumRefNumbers.__enum_tag})(y\\d+:[A-Za-z0-9_.]|R\\d+)g`
+  const enumRegex = new RegExp(enumPattern, "g");
+  return serialized.replace(enumRegex, "w$3$5:0"); 
 }
 
 async function serialize(data) {
@@ -70,6 +117,7 @@ async function serialize(data) {
   serializer.addTypeHints = true;
   serializer.serialize(data)
   let serialized = serializer.toString()
+  
   serialized = handleHaxeEnums(serialized)
   const checksum = await makeCRC(serialized)
   return serialized + '#' + checksum
